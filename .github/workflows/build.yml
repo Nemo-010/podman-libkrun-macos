@@ -1,0 +1,92 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - id: name
+        run: echo "image=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    needs: meta
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        id: build
+        uses: redhat-actions/buildah-build@v2
+        with:
+          image: ${{ needs.meta.outputs.image }}
+          tags: ${{ github.sha }}-${{ matrix.arch }}
+          containerfiles: ./Containerfile
+          archs: ${{ matrix.arch }}
+          build-args: |
+            BASE_IMAGE=alpine:latest
+
+      - name: Push to GHCR
+        if: github.event_name != 'pull_request'
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build.outputs.image }}
+          tags: ${{ steps.build.outputs.tags }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  manifest:
+    name: publish multi-arch manifest
+    if: github.event_name != 'pull_request'
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            podman login "${{ env.REGISTRY }}" \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Create and push manifest
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ needs.meta.outputs.image }}
+        run: |
+          set -euo pipefail
+
+          podman manifest create "$IMAGE:latest"
+          for arch in amd64 arm64; do
+            podman manifest add "$IMAGE:latest" \
+              "docker://${IMAGE}:${GITHUB_SHA}-${arch}"
+          done
+          podman manifest push --all "$IMAGE:latest" "docker://$IMAGE:latest"
