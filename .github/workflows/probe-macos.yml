@@ -1,0 +1,33 @@
+name: probe-macos
+on: workflow_dispatch
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: arm64
+          - runner: macos-15-intel
+            label: intel-x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: host facts
+        run: |
+          echo "runner=${{ matrix.runner }}"
+          uname -m
+          sw_vers
+          sysctl -n kern.hv_support || echo "hv_support: n/a"
+          sysctl -n machdep.cpu.brand_string || true
+      - name: install podman
+        run: |
+          brew install podman || brew upgrade podman || true
+          podman --version
+          podman machine info || true
+      - name: try qemu provider
+        continue-on-error: true
+        run: |
+          podman machine init --provider qemu --cpus 2 --memory 2048 probe-qemu || true
+          timeout 300 podman machine start probe-qemu || echo "QEMU_START_FAILED"
+          podman machine ssh probe-qemu uname -m || echo "QEMU_SSH_FAILED"
