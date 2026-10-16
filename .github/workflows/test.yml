@@ -152,6 +152,9 @@ jobs:
     name: libkrun on macOS runner (expected to be blocked)
     runs-on: macos-15
     continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
 
@@ -181,8 +184,17 @@ jobs:
       - name: Inspect the published image (works without a machine)
         run: |
           brew install skopeo
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            skopeo login ghcr.io \
+              --username "${{ github.actor }}" --password-stdin
           skopeo inspect --raw "docker://ghcr.io/${GITHUB_REPOSITORY,,}:latest" \
-            | python3 -c 'import json,sys; d=json.load(sys.stdin); print([m["platform"]["architecture"] for m in d["manifests"]])'
+            > manifest.json
+          python3 -c '
+import json
+platforms = [m["platform"]["architecture"] for m in json.load(open("manifest.json"))["manifests"]]
+print("published architectures:", platforms)
+assert "arm64" in platforms, platforms
+'
 
       - name: Record the limitation
         run: |
