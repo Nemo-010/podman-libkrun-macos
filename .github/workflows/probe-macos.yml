@@ -3,40 +3,42 @@ on: workflow_dispatch
 
 jobs:
   probe:
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: arm64
+          - runner: macos-15-intel
+            label: intel
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: host facts
         run: |
           uname -m; sw_vers
-          sysctl -n machdep.cpu.brand_string || true
-          echo "--- hypervisor support"
-          sysctl -a 2>/dev/null | grep -i "hv_" | head -20 || echo "(no hv_ sysctls)"
-      - name: install podman and krunkit
+          sysctl -n kern.hv_support 2>/dev/null || echo "kern.hv_support: absent"
+          sysctl -n kern.hv_vmm_present 2>/dev/null || echo "kern.hv_vmm_present: absent"
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+
+      - name: install podman and krunkit (arm64 only)
+        if: matrix.label == 'arm64'
         run: |
-          set -x
           brew install podman
           brew tap libkrun/krun
           brew trust libkrun/krun || true
           brew install krunkit
-          podman --version
-          command -v krunkit && krunkit --version
-      - name: provider list
-        run: |
-          podman machine info || true
-          podman info --format '{{.Host.OCIRuntime.Name}}' || true
-      - name: try libkrun machine
+          krunkit --version
+
+      - name: create machine and capture krunkit error
+        if: matrix.label == 'arm64'
         run: |
           set -x
           podman machine init --provider libkrun --cpus 2 --memory 2048 lk
-          podman machine start lk
-          podman machine ssh lk uname -m
-      - name: try running a container
-        run: |
-          set -x
-          podman run --rm alpine:latest uname -m
-      - name: machine logs on failure
-        if: failure()
-        run: |
-          podman machine list || true
-          podman machine inspect lk || true
-          ls -la ~/.local/share/containers/podman/machine/ 2>/dev/null || true
+          podman machine start lk 2>&1 | tee /tmp/start.out || true
+          echo "=== machine dir ==="
+          find ~/.local/share/containers/podman/machine -maxdepth 3 -type f 2>/dev/null | head -20
+          echo "=== any krunkit/libkrun logs ==="
+          find ~ -name "*krunkit*" -o -name "*krun*.log" 2>/dev/null | head
+          for f in $(find ~ -name "*.log" -path "*machine*" 2>/dev/null | head -5); do
+            echo "--- $f"; tail -40 "$f"
+          done
