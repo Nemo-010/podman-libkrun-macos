@@ -187,7 +187,9 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" |
             skopeo login ghcr.io \
               --username "${{ github.actor }}" --password-stdin
-          skopeo inspect --raw "docker://ghcr.io/${GITHUB_REPOSITORY,,}:latest" > manifest.json
+          # macOS ships bash 3.2, which has no ${VAR,,}; lowercase portably.
+          repo=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          skopeo inspect --raw "docker://ghcr.io/${repo}:latest" > manifest.json
           python3 scripts/check-manifest.py manifest.json
 
       - name: Record the limitation

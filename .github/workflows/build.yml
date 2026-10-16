@@ -18,7 +18,9 @@ jobs:
       image: ${{ steps.name.outputs.image }}
     steps:
       - id: name
-        run: echo "image=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          repo=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "image=$repo" >> "$GITHUB_OUTPUT"
 
   build:
     name: build ${{ matrix.arch }}
