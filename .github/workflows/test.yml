@@ -1,0 +1,195 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      quartus_installer:
+        description: "Quartus installer to fetch"
+        type: choice
+        options: [programmer, lite]
+        default: programmer
+
+env:
+  IMAGE: podman-libkrun-macos
+  # Bump these together when Altera releases a new version. They are kept as
+  # variables rather than baked into the image so the image itself stays
+  # generic.
+  QUARTUS_VERSION: "25.1std.0.1129"
+  QUARTUS_URLDIR: "25.1std/1129"
+
+jobs:
+  # The image is native aarch64, so this is where it can actually be used.
+  # Build it, then install and run real things inside it.
+  smoke:
+    name: build and test image (arm64)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install podman
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq podman
+
+      - name: Build image
+        run: podman build -t "$IMAGE" .
+
+      - name: Architecture is native aarch64
+        run: |
+          got=$(podman run --rm "$IMAGE" uname -m)
+          echo "uname -m -> $got"
+          test "$got" = "aarch64"
+
+      - name: Install packages inside the image and use them
+        run: |
+          podman run --rm "$IMAGE" bash -euo pipefail -c '
+            set -x
+            # install real tooling at runtime, not just at build time
+            apk add --no-cache python3 gcc musl-dev make
+
+            python3 -c "import sys, platform; print(sys.version); print(platform.machine())"
+
+            # compile and run a C program
+            printf "%s\n" "#include <stdio.h>" \
+              "int main(void){ printf(\"hello from C on %s\\n\", \"aarch64\"); return 0; }" \
+              > /tmp/hi.c
+            gcc -O2 -o /tmp/hi /tmp/hi.c
+            /tmp/hi | tee /tmp/hi.out
+            grep -q "hello from C" /tmp/hi.out
+
+            # drive a Makefile
+            mkdir -p /tmp/mk && cd /tmp/mk
+            printf "all:\n\t@echo make-works\n" > Makefile
+            make | grep -q make-works
+
+            git --version
+            curl --version | head -1
+          '
+
+      - name: Working dir and env are as documented
+        run: |
+          test "$(podman run --rm "$IMAGE" pwd)" = "/work"
+          podman run --rm "$IMAGE" printenv LANG | grep -q "C.UTF-8"
+
+      - name: Extra packages build arg works
+        run: |
+          podman build --build-arg EXTRA_PACKAGES="python3 py3-pip" -t "$IMAGE:extra" .
+          podman run --rm "$IMAGE:extra" python3 -c "print('extra packages ok')"
+
+  # Quartus is x86-64 Linux only, so this is the one place it can actually run.
+  # This is the point of the whole exercise: prove the toolkit works somewhere
+  # reproducible, and record exactly where.
+  quartus:
+    name: quartus on native x86-64 linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Explain the constraint
+        run: |
+          echo "Quartus Prime has no aarch64 and no macOS build."
+          echo "It cannot run inside the aarch64 libkrun machine, so it is"
+          echo "exercised here on a native x86-64 runner instead."
+
+      - name: Fetch installer
+        run: |
+          set -euo pipefail
+          base="https://download.altera.com/akdlm/software/acdsinst/${QUARTUS_URLDIR}/ib_installers"
+          case "${{ github.event.inputs.quartus_installer || 'programmer' }}" in
+            lite)       file="QuartusLiteSetup-${QUARTUS_VERSION}-linux.run" ;;
+            programmer) file="QuartusProgrammerSetup-${QUARTUS_VERSION}-linux.run" ;;
+          esac
+          echo "downloading $file"
+          curl -fL --retry 3 -A "Alterabot/1.0" -o "$file" "$base/$file"
+          ls -la "$file"
+          sha1sum "$file"
+          echo "QUARTUS_FILE=$file" >> "$GITHUB_ENV"
+
+      - name: Install (unattended)
+        run: |
+          set -euo pipefail
+          chmod +x "$QUARTUS_FILE"
+          ./"$QUARTUS_FILE" \
+            --mode unattended --unattendedmodeui none --accept_eula 1 \
+            --installdir "$PWD/quartus"
+          ls quartus
+
+      - name: Run the toolkit
+        run: |
+          set -euo pipefail
+          root="$PWD/quartus/qprogrammer"
+          [ -d "$root" ] || root="$PWD/quartus/quartus"
+          export QUARTUS_ROOTDIR="$root"
+          export LD_LIBRARY_PATH="$root/linux64"
+
+          "$root/bin/quartus_sh" --version
+          "$root/bin/quartus_cpf" --help | head -5
+          "$root/bin/quartus_pgm" --help | head -5
+          "$root/bin/jtagconfig" --help | head -5
+
+      - name: Record why this is not on macOS
+        run: |
+          {
+            echo "### Quartus"
+            echo
+            echo "Ran on \`ubuntu-latest\` (x86-64), the only platform it supports."
+            echo
+            echo "| Platform | Supported |"
+            echo "|---|---|"
+            echo "| x86-64 Linux | yes, tested here |"
+            echo "| aarch64 Linux | no, no build exists |"
+            echo "| macOS | no, no build exists |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The macOS runner cannot start a libkrun machine: it is itself a VM and
+  # GitHub does not enable nested virtualization. This job records that
+  # rather than pretending otherwise.
+  macos-libkrun:
+    name: libkrun on macOS runner (expected to be blocked)
+    runs-on: macos-15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host facts
+        run: |
+          uname -m; sw_vers
+          sysctl -n kern.hv_vmm_present 2>/dev/null || echo "kern.hv_vmm_present: absent"
+          sysctl -n machdep.cpu.brand_string 2>/dev/null || true
+
+      - name: Install podman and krunkit
+        run: |
+          brew install podman
+          brew tap libkrun/krun
+          brew trust libkrun/krun || true
+          brew install krunkit
+          krunkit --version
+
+      - name: Attempt the libkrun machine
+        run: |
+          set -x
+          podman machine init --provider libkrun --cpus 2 --memory 2048 lk || true
+          podman machine start lk 2>&1 | tee start.out || true
+          if grep -qi "krunkit exited unexpectedly" start.out; then
+            echo "::warning::libkrun cannot start here; nested virtualization is unavailable"
+          fi
+
+      - name: Inspect the published image (works without a machine)
+        run: |
+          brew install skopeo
+          skopeo inspect --raw "docker://ghcr.io/${GITHUB_REPOSITORY,,}:latest" \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); print([m["platform"]["architecture"] for m in d["manifests"]])'
+
+      - name: Record the limitation
+        run: |
+          {
+            echo "### macOS / libkrun"
+            echo
+            echo "GitHub-hosted macOS runners are themselves VMs and do not expose"
+            echo "nested virtualization, so \`krunkit\` cannot start a machine."
+            echo "See docs/macos-libkrun.md."
+          } >> "$GITHUB_STEP_SUMMARY"
