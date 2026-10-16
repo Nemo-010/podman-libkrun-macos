@@ -3,31 +3,40 @@ on: workflow_dispatch
 
 jobs:
   probe:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            label: arm64
-          - runner: macos-15-intel
-            label: intel-x86_64
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-15
     steps:
       - name: host facts
         run: |
-          echo "runner=${{ matrix.runner }}"
-          uname -m
-          sw_vers
-          sysctl -n kern.hv_support || echo "hv_support: n/a"
+          uname -m; sw_vers
           sysctl -n machdep.cpu.brand_string || true
-      - name: install podman
+          echo "--- hypervisor support"
+          sysctl -a 2>/dev/null | grep -i "hv_" | head -20 || echo "(no hv_ sysctls)"
+      - name: install podman and krunkit
         run: |
-          brew install podman || brew upgrade podman || true
+          set -x
+          brew install podman
+          brew tap libkrun/krun
+          brew trust libkrun/krun || true
+          brew install krunkit
           podman --version
-          podman machine info || true
-      - name: try qemu provider
-        continue-on-error: true
+          command -v krunkit && krunkit --version
+      - name: provider list
         run: |
-          podman machine init --provider qemu --cpus 2 --memory 2048 probe-qemu || true
-          timeout 300 podman machine start probe-qemu || echo "QEMU_START_FAILED"
-          podman machine ssh probe-qemu uname -m || echo "QEMU_SSH_FAILED"
+          podman machine info || true
+          podman info --format '{{.Host.OCIRuntime.Name}}' || true
+      - name: try libkrun machine
+        run: |
+          set -x
+          podman machine init --provider libkrun --cpus 2 --memory 2048 lk
+          podman machine start lk
+          podman machine ssh lk uname -m
+      - name: try running a container
+        run: |
+          set -x
+          podman run --rm alpine:latest uname -m
+      - name: machine logs on failure
+        if: failure()
+        run: |
+          podman machine list || true
+          podman machine inspect lk || true
+          ls -la ~/.local/share/containers/podman/machine/ 2>/dev/null || true
