@@ -40,6 +40,23 @@ podman run --rm -it podman-libkrun-macos
 
 ## Documentation
 
-- [`docs/macos-libkrun.md`](docs/macos-libkrun.md) — creating the machine
-- [`docs/container.md`](docs/container.md) — building and running the image
-- [`docs/troubleshooting.md`](docs/troubleshooting.md) — when it goes wrong
+- `docs/macos-libkrun.md` — creating the machine
+- `docs/container.md` — building and running the image
+- `docs/quartus.md` — why Quartus cannot run here, and where it is tested
+- `docs/troubleshooting.md` — when it goes wrong
+
+## Workflows
+
+- `.github/workflows/build.yml` — builds amd64 and arm64 on native runners and
+  publishes a multi-arch manifest to GHCR.
+- `.github/workflows/test.yml` — builds and exercises the image on an arm64
+  runner, runs Quartus on x86-64 Linux, and records the macOS/libkrun limit.
+
+## Two things that are true and worth knowing up front
+
+- Quartus Prime is x86-64 Linux only. It has no aarch64 and no macOS build, so
+  it cannot run inside the aarch64 libkrun machine. See
+  [`docs/quartus.md`](docs/quartus.md).
+- GitHub-hosted macOS runners cannot start a libkrun machine. The runners are
+  themselves VMs and nested virtualization is not available, so `krunkit`
+  exits immediately. The workflow records this rather than hiding it.
