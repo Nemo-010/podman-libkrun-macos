@@ -1,0 +1,102 @@
+name: quartus
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image name
+        id: name
+        run: |
+          repo=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/$repo" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: |
+          podman build -f Containerfile.quartus -t quartus:test .
+
+      # The important test: the tools must actually run, not just be installed.
+      - name: Tools run
+        run: |
+          set -euo pipefail
+          podman run --rm quartus:test quartus_sh --version
+          podman run --rm quartus:test quartus_cpf --version
+          podman run --rm quartus:test quartus_pgm --version
+          podman run --rm quartus:test jtagconfig --help
+
+      - name: Tools do real work
+        run: |
+          set -euo pipefail
+          cat > check.tcl <<'TCL'
+          puts "TCL_PATCHLEVEL=[info patchlevel]"
+          puts "SUM=[expr {6*7}]"
+          TCL
+          podman run --rm -v "$PWD/check.tcl:/tmp/check.tcl:ro" quartus:test \
+            quartus_sh -t /tmp/check.tcl | tee out.txt
+          grep -q "TCL_PATCHLEVEL=8" out.txt
+          grep -q "SUM=42" out.txt
+
+      - name: Image is amd64
+        run: |
+          arch=$(podman image inspect quartus:test --format '{{.Architecture}}')
+          echo "architecture: $arch"
+          test "$arch" = "amd64"
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        run: |
+          podman login ghcr.io -u "${{ github.actor }}" --password-stdin \
+            <<< "${{ secrets.GITHUB_TOKEN }}"
+          podman tag quartus:test "${{ steps.name.outputs.image }}:latest"
+          podman push "${{ steps.name.outputs.image }}:latest"
+
+  # Runs the amd64 image under qemu-user emulation, which is exactly what
+  # happens on an Apple Silicon Mac with Podman. Proves it works there.
+  emulated:
+    name: run emulated (as on Apple Silicon)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install qemu-user-static
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static binfmt-support
+          ls /proc/sys/fs/binfmt_misc/ | grep -i qemu || true
+
+      - name: Build
+        run: podman build -f Containerfile.quartus -t quartus:test .
+
+      - name: Tools run under emulation
+        run: |
+          set -euo pipefail
+          podman run --rm --arch amd64 quartus:test quartus_sh --version
+          podman run --rm --arch amd64 quartus:test quartus_cpf --version
+
+      - name: Tcl works under emulation
+        run: |
+          set -euo pipefail
+          cat > check.tcl <<'TCL'
+          puts "SUM=[expr {6*7}]"
+          TCL
+          podman run --rm --arch amd64 \
+            -v "$PWD/check.tcl:/tmp/check.tcl:ro" quartus:test \
+            quartus_sh -t /tmp/check.tcl | tee out.txt
+          grep -q "SUM=42" out.txt

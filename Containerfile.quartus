@@ -1,0 +1,94 @@
+# Quartus Prime in a container that runs on Apple Silicon (and anywhere else).
+#
+# The image is x86-64 Linux, because that is the only thing Quartus ships.
+# On an Arm machine the container is run through qemu-user emulation, which
+# Podman sets up for you via binfmt_misc. No nested VM, no libkrun, no setup.
+
+ARG BASE_IMAGE=debian:stable-slim
+
+FROM --platform=linux/amd64 ${BASE_IMAGE}
+
+ARG QUARTUS_VERSION=25.1std.0.1129
+ARG QUARTUS_URLDIR=25.1std/1129
+ARG QUARTUS_EDITION=lite
+# Device families to keep. Fewer families means a much smaller image.
+ARG DEVICES=cyclone
+ARG DEBIAN_FRONTEND=noninteractive
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        libncurses6 \
+        libtinfo6 \
+        libx11-6 \
+        libxext6 \
+        libxft2 \
+        libxrender1 \
+        libxi6 \
+        libxtst6 \
+        libxau6 \
+        libxdmcp6 \
+        libsm6 \
+        libice6 \
+        libfontconfig1 \
+        libfreetype6 \
+        libdbus-1-3 \
+        libexpat1 \
+        libglib2.0-0 \
+        libpng16-16 \
+        zlib1g \
+        bzip2 \
+        unzip \
+        procps \
+        tzdata \
+        udev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/quartus
+
+RUN set -euo pipefail; \
+    base="https://download.altera.com/akdlm/software/acdsinst/${QUARTUS_URLDIR}/ib_installers"; \
+    case "${QUARTUS_EDITION}" in \
+      lite)       file="QuartusLiteSetup-${QUARTUS_VERSION}-linux.run" ;; \
+      programmer) file="QuartusProgrammerSetup-${QUARTUS_VERSION}-linux.run" ;; \
+      *) echo "unknown QUARTUS_EDITION: ${QUARTUS_EDITION}" >&2; exit 1 ;; \
+    esac; \
+    echo "downloading ${file}"; \
+    curl -fL --retry 3 --retry-delay 2 -A "Alterabot/1.0" -o "${file}" "${base}/${file}"; \
+    chmod +x "${file}"; \
+    echo "installing"; \
+    ./"${file}" \
+        --mode unattended \
+        --unattendedmodeui none \
+        --accept_eula 1 \
+        --installdir /opt/quartus \
+        --disable-components questa_fse,quartus_help,quartus_update; \
+    rm -rf /tmp/quartus /opt/quartus/logs /opt/quartus/uninstall
+
+# Drop device families nobody asked for, to keep the image reasonable.
+RUN set -euo pipefail; \
+    for fam in arria_lite cyclone10lp cyclonev max max10; do \
+      case ",${DEVICES}," in \
+        *",${fam},"*) : ;; \
+        *) rm -rf "/opt/quartus/quartus/common/devinfo/${fam}" 2>/dev/null || true ;; \
+      esac; \
+    done
+
+# Point straight at the real binaries.
+#
+# Quartus ships a launcher in bin/ that sources adm/qenv.sh, which refuses to
+# run unless `uname -m` is x86_64 and /proc/cpuinfo mentions sse. Under
+# emulation `uname -m` reports the host (aarch64), so the launcher aborts even
+# though the binaries themselves are fine. Putting linux64 on PATH skips the
+# launcher entirely and runs the binaries directly, which works.
+ENV QUARTUS_ROOTDIR=/opt/quartus/quartus
+ENV LD_LIBRARY_PATH=/opt/quartus/quartus/linux64
+ENV PATH=/opt/quartus/quartus/linux64:/opt/quartus/quartus/bin:/usr/local/bin:/usr/bin:/bin
+ENV LANG=C.UTF-8
+
+WORKDIR /work
+
+CMD ["/bin/bash"]
