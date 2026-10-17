@@ -1,62 +1,52 @@
-# podman-libkrun-macos
+# Quartus in a container
 
-A minimal container image and setup notes for running work inside a Podman
-machine on macOS backed by **libkrun**.
-
-- `Containerfile` — a small, generic Alpine image. No qemu, no cross-arch
-  emulation.
-- `scripts/setup-macos.sh` — installs `krunkit` and creates the Podman machine
-  on Apple Silicon.
-- `docs/` — the details.
-- `.github/workflows/build.yml` — builds the image and pushes it to GHCR.
-
-In Electrosphere terms this is the Neucom approach: keep it lean and native
-rather than bolting an emulator on top.
-
-## Why this shape
-
-On Apple Silicon, `podman machine` runs an aarch64 Linux VM, and Podman 6 and
-newer default to the `libkrun` provider. libkrun talks to Apple's Hypervisor
-framework directly, so the guest is native aarch64. There is no qemu and no
-Rosetta in this path, which is exactly why the image here is a plain multi-arch
-Alpine base with nothing architecture-specific in it.
-
-## Quick start (macOS, Apple Silicon)
+Run Quartus Prime with one command, on a Mac or on Linux.
 
 ```sh
-brew install podman
-./scripts/setup-macos.sh
-
-podman build -t podman-libkrun-macos .
-podman run --rm -it podman-libkrun-macos
+podman run --rm -it -v "$PWD:/work" ghcr.io/nemo-010/podman-libkrun-macos:quartus
 ```
 
-## Requirements
+You get a shell with `quartus_sh`, `quartus_cpf`, `quartus_pgm` and
+`jtagconfig` on `PATH`. Your directory is mounted at `/work`.
 
-- Apple Silicon (arm64). libkrun only supports Arm systems; on Intel Macs use
-  the `applehv` provider.
-- macOS 14 or newer (a `krunkit` requirement).
-- Podman, plus `krunkit` from the `slp/krun` Homebrew tap.
+That is the whole thing. No setup, no emulator install, no virtual machine
+configuration.
 
-## Documentation
+## On an Apple Silicon Mac
 
-- `docs/macos-libkrun.md` — creating the machine
-- `docs/container.md` — building and running the image
-- `docs/quartus.md` — why Quartus cannot run here, and where it is tested
-- `docs/troubleshooting.md` — when it goes wrong
+It works because Podman's macOS machine already ships `qemu-user-static-x86`
+and registers the binfmt handler. The image is amd64, so Podman runs it
+through emulation without being asked. Nothing to configure.
 
-## Workflows
+## Build it yourself
 
-- `.github/workflows/build.yml` — builds amd64 and arm64 on native runners and
-  publishes a multi-arch manifest to GHCR.
-- `.github/workflows/test.yml` — builds and exercises the image on an arm64
-  runner, runs Quartus on x86-64 Linux, and records the macOS/libkrun limit.
+```sh
+podman build -f Containerfile.quartus -t quartus .
+podman run --rm -it -v "$PWD:/work" quartus
+```
 
-## Two things that are true and worth knowing up front
+Useful build args:
 
-- Quartus Prime is x86-64 Linux only. It has no aarch64 and no macOS build, so
-  it cannot run inside the aarch64 libkrun machine. See
-  [`docs/quartus.md`](docs/quartus.md).
-- GitHub-hosted macOS runners cannot start a libkrun machine. The runners are
-  themselves VMs and nested virtualization is not available, so `krunkit`
-  exits immediately. The workflow records this rather than hiding it.
+| Arg | Default | Meaning |
+|---|---|---|
+| `QUARTUS_EDITION` | `lite` | `lite`, or `programmer` for a smaller image |
+| `DEVICES` | `cyclone` | comma-separated device families to keep |
+| `QUARTUS_VERSION` | `25.1std.0.1129` | Altera installer version |
+| `BASE_IMAGE` | `debian:stable-slim` | base image |
+
+## What is in here
+
+| Path | What |
+|---|---|
+| `Containerfile.quartus` | the Quartus image |
+| `.github/workflows/quartus.yml` | builds it, tests the tools, pushes to GHCR |
+| `docs/quartus.md` | usage notes |
+| `Containerfile` | a small generic Alpine image, unrelated to Quartus |
+| `scripts/setup-macos.sh` | creates a Podman machine on macOS |
+| `.github/workflows/build.yml`, `test.yml` | the generic image's CI |
+
+## Notes
+
+- The image is a few GB. The first pull takes a while; later runs are local.
+- Emulation on Arm is slower than native x86-64. Fine for programming and
+  conversion, slower for large compiles.
