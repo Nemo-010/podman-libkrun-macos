@@ -1,60 +1,67 @@
-# Quartus and the architecture problem
+# Quartus, in one command
 
-Quartus Prime is **x86-64 Linux only**. That single fact determines everything
-about where it can run, and it is worth stating plainly because it is easy to
-miss.
+Quartus is x86-64 Linux software. That is the only thing you need to know: the
+container is x86-64, and on an Apple Silicon Mac Podman runs it through
+emulation automatically. There is nothing to set up.
 
-## What Quartus supports
+## Run it
 
-From Altera's own software:
+```sh
+podman run --rm -it -v "$PWD:/work" ghcr.io/nemo-010/podman-libkrun-macos:quartus
+```
 
-- The Linux installer is an ELF x86-64 binary. The 25.1 Lite installer contains
-  no `aarch64` or `arm64` payload of any kind.
-- The OS support matrix lists Windows, RHEL, SUSE and Ubuntu. There is no
-  macOS, Apple or Darwin entry anywhere.
-- The official Altera container images (`alterafpga/quartus-*`,
-  `intel/quartuspro-*`) publish `linux/amd64` only.
-- Distribution packaging agrees: Arch's AUR `quartus-free` is `arch=('x86_64')`,
-  and nixpkgs declares `platforms = [ "x86_64-linux" ]`.
+You get a shell with the Quartus tools on `PATH`:
 
-## What that means for each layer here
+```sh
+quartus_sh --version
+quartus_cpf --version
+quartus_pgm --version
+jtagconfig --help
+```
 
-| Where | Guest architecture | Can run Quartus? |
-|---|---|---|
-| libkrun machine on Apple Silicon | aarch64 | no |
-| macOS runner in Actions | aarch64 | no |
-| native x86-64 Linux | x86-64 | yes |
+That is it. Your current directory is mounted at `/work`, which is the working
+directory inside the container.
 
-The libkrun provider on Apple Silicon boots an **aarch64** Linux guest, because
-libkrun uses the Hypervisor framework and runs native guests. It has no x86-64
-guest support. So the image in this repository is a native aarch64 image, and
-Quartus cannot run in it.
+## Or build it yourself
 
-This is not a limitation of the image or of the setup. There is no build of
-Quartus for either aarch64 or macOS to run.
+```sh
+podman build -f Containerfile.quartus -t quartus .
+podman run --rm -it -v "$PWD:/work" quartus
+```
 
-## Where Quartus is tested
+Pick a different device family or edition with build args:
 
-`.github/workflows/test.yml` runs Quartus on `ubuntu-latest`, which is x86-64
-Linux, and executes `quartus_sh`, `quartus_cpf`, `quartus_pgm` and
-`jtagconfig`. That is the only platform where it can work, so it is the only
-place the test can be meaningful.
+```sh
+podman build -f Containerfile.quartus \
+  --build-arg DEVICES=cyclone,cyclonev,max10 \
+  --build-arg QUARTUS_EDITION=lite \
+  -t quartus .
+```
 
-## The earlier work on this
+`QUARTUS_EDITION=programmer` builds a much smaller image if you only need
+programming and conversion.
 
-Separately, Quartus was exercised under qemu user emulation on an aarch64 host.
-It can be made to start that way, but it is not a practical setup:
+## Why it works on a Mac
 
-- `adm/qenv.sh` runs `uname -m`; anything other than `x86_64` makes it assume a
-  32-bit machine and abort with "Can not run the 64-bit Quartus II software on
-  a 32-bit machine."
-- It then greps `/proc/cpuinfo` for `sse` and terminates when it is absent,
-  which is always the case on ARM.
+Podman's machine on macOS already ships `qemu-user-static-x86` and registers
+the binfmt handler, so an amd64 container runs on an arm64 VM without any
+configuration. This image is amd64, so it just runs.
 
-Both checks have to be patched, and the result is slow enough that it is not
-day-to-day work. Use an x86-64 machine or a native x86-64 runner instead.
+The one thing that needed fixing is that Quartus ships a launcher in `bin/`
+which refuses to start unless the host looks like x86-64 Linux. The image puts
+the real binaries directory on `PATH` instead, so you never hit that launcher.
 
-## If you need Quartus on Arm hardware
+## Not using a Mac?
 
-The honest options are an x86-64 host, a cloud x86-64 runner, or emulation with
-the caveats above. There is no native path.
+Same command works on any Linux machine, with no emulation at all:
+
+```sh
+podman run --rm -it -v "$PWD:/work" ghcr.io/nemo-010/podman-libkrun-macos:quartus
+```
+
+## Notes
+
+- The first pull is a few GB. Later runs reuse the local image.
+- Emulation is slower than native. For big compiles, native x86-64 is faster.
+- Quartus needs a licence for some devices; the free Lite edition covers
+  Cyclone, MAX and similar families.

@@ -63,8 +63,8 @@ jobs:
         run: |
           podman login ghcr.io -u "${{ github.actor }}" --password-stdin \
             <<< "${{ secrets.GITHUB_TOKEN }}"
-          podman tag quartus:test "${{ steps.name.outputs.image }}:latest"
-          podman push "${{ steps.name.outputs.image }}:latest"
+          podman tag quartus:test "${{ steps.name.outputs.image }}:quartus"
+          podman push "${{ steps.name.outputs.image }}:quartus"
 
   # Runs the amd64 image under qemu-user emulation, which is exactly what
   # happens on an Apple Silicon Mac with Podman. Proves it works there.
